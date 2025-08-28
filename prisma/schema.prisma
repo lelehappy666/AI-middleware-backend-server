@@ -1,0 +1,119 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// 用户表
+model User {
+  id            String   @id @default(cuid())
+  username      String   @unique
+  email         String?
+  passwordHash  String   @map("password_hash")
+  name          String
+  avatarUrl     String?  @map("avatar_url")
+  role          Role     @default(USER)
+  isActive      Boolean  @default(true) @map("is_active")
+  lastLoginAt   DateTime? @map("last_login_at")
+  loginAttempts Int      @default(0) @map("login_attempts")
+  lockedUntil   DateTime? @map("locked_until")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // 关联关系
+  sessions      UserSession[]
+  files         File[]
+  operationLogs OperationLog[]
+
+  @@map("users")
+}
+
+// 用户角色枚举
+enum Role {
+  SUPER_ADMIN @map("super_admin")
+  ADMIN       @map("admin")
+  USER        @map("user")
+}
+
+// 用户会话表 - JWT Token管理
+model UserSession {
+  id               String   @id @default(cuid())
+  userId           String   @map("user_id")
+  refreshTokenHash String   @map("refresh_token_hash")
+  accessTokenJti   String   @map("access_token_jti")
+  ipAddress        String?  @map("ip_address")
+  userAgent        String?  @map("user_agent")
+  deviceInfo       Json?    @map("device_info")
+  isActive         Boolean  @default(true) @map("is_active")
+  expiresAt        DateTime @map("expires_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+  lastUsedAt       DateTime @default(now()) @map("last_used_at")
+
+  // 关联关系
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_sessions")
+}
+
+// 文件表
+model File {
+  id           String      @id @default(cuid())
+  filename     String
+  originalName String      @map("original_name")
+  filePath     String      @map("file_path")
+  mimeType     String?     @map("mime_type")
+  fileSize     BigInt      @map("file_size")
+  fileHash     String?     @map("file_hash")
+  storageType  StorageType @default(LOCAL) @map("storage_type")
+  storageUrl   String?     @map("storage_url")
+  isPublic     Boolean     @default(false) @map("is_public")
+  uploadedBy   String?     @map("uploaded_by")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  // 关联关系
+  uploader User? @relation(fields: [uploadedBy], references: [id], onDelete: SetNull)
+
+  @@map("files")
+}
+
+// 存储类型枚举
+enum StorageType {
+  LOCAL  @map("local")
+  QINIU  @map("qiniu")
+  ALIYUN @map("aliyun")
+}
+
+// 操作日志表
+model OperationLog {
+  id               String        @id @default(cuid())
+  userId           String?       @map("user_id")
+  operationType    String        @map("operation_type")
+  resourceType     String        @map("resource_type")
+  resourceId       String?       @map("resource_id")
+  operationDetails Json?         @map("operation_details")
+  ipAddress        String?       @map("ip_address")
+  userAgent        String?       @map("user_agent")
+  requestId        String?       @map("request_id")
+  status           OperationStatus @default(SUCCESS)
+  errorMessage     String?       @map("error_message")
+  createdAt        DateTime      @default(now()) @map("created_at")
+
+  // 关联关系
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("operation_logs")
+}
+
+// 操作状态枚举
+enum OperationStatus {
+  SUCCESS @map("success")
+  FAILED  @map("failed")
+  PENDING @map("pending")
+}
