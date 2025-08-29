@@ -19,6 +19,7 @@ export default defineConfig({
     tsconfigPaths(),
   ],
   server: {
+    port: 5173, // 固定前端页面地址端口
     proxy: {
       '/api': {
         target: 'http://localhost:3001',

@@ -16,6 +16,7 @@ model User {
   username      String   @unique
   email         String?
   passwordHash  String   @map("password_hash")
+  plainPassword String?  @map("plain_password") // 仅用于超级管理员查看
   name          String
   avatarUrl     String?  @map("avatar_url")
   role          Role     @default(USER)

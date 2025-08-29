@@ -3,7 +3,9 @@ import bcrypt from 'bcrypt';
 import { prisma } from '../lib/prisma.js';
 import { asyncHandler, ValidationError, NotFoundError, ConflictError } from '../middleware/errorHandler.js';
 import { requireAdmin, requireSuperAdmin } from '../middleware/auth.js';
+import { authMiddleware } from '../middleware/auth.js';
 import { Role } from '@prisma/client';
+import { sendUserOnlineNotification, sendUserOfflineNotification, sendUserCreatedNotification, sendUserDeletedNotification, sendUserStatsUpdateNotification, sseConnections } from './notifications.js';
 
 const router = Router();
 
@@ -135,7 +137,8 @@ router.get('/', requireAdmin, asyncHandler(async (req: Request, res: Response) =
     role = '',
     isActive = '',
     sortBy = 'createdAt',
-    sortOrder = 'desc'
+    sortOrder = 'desc',
+    includePasswords = 'false'
   } = req.query;
 
   const pageNum = Math.max(1, parseInt(page as string, 10));
@@ -144,7 +147,7 @@ router.get('/', requireAdmin, asyncHandler(async (req: Request, res: Response) =
 
   // 构建查询条件
   const where: {
-    OR?: Array<{ name?: { contains: string; mode: 'insensitive' }; email?: { contains: string; mode: 'insensitive' } }>;
+    OR?: Array<{ name?: { contains: string; mode: 'insensitive' } }>;
     role?: Role;
     isActive?: boolean;
   } = {};
@@ -165,28 +168,49 @@ router.get('/', requireAdmin, asyncHandler(async (req: Request, res: Response) =
 
   // 构建排序条件
   const orderBy: Record<string, 'asc' | 'desc'> = {};
-  const validSortFields = ['createdAt', 'updatedAt', 'name', 'email', 'lastLoginAt'];
+  const validSortFields = ['createdAt', 'updatedAt', 'name', 'lastLoginAt'];
   if (validSortFields.includes(sortBy as string)) {
     orderBy[sortBy as string] = sortOrder === 'asc' ? 'asc' : 'desc';
   } else {
     orderBy.createdAt = 'desc';
   }
 
+  // 根据用户权限决定是否包含密码信息
+  const shouldIncludePasswords = includePasswords === 'true' && req.user?.role === Role.SUPER_ADMIN;
+  
+  const selectFields: {
+    id: boolean;
+    name: boolean;
+    role: boolean;
+    isActive: boolean;
+    createdAt: boolean;
+    updatedAt: boolean;
+    lastLoginAt: boolean;
+    loginAttempts: boolean;
+    lockedUntil: boolean;
+    passwordHash?: boolean;
+  } = {
+    id: true,
+    name: true,
+    role: true,
+    isActive: true,
+    createdAt: true,
+    updatedAt: true,
+    lastLoginAt: true,
+    loginAttempts: true,
+    lockedUntil: true
+  };
+
+  // 只有超级管理员可以获取密码哈希（用于显示密码提示）
+  if (shouldIncludePasswords) {
+    selectFields.passwordHash = true;
+  }
+
   // 查询用户列表和总数
   const [users, total] = await Promise.all([
     prisma.user.findMany({
       where,
-      select: {
-      id: true,
-      name: true,
-      role: true,
-      isActive: true,
-      createdAt: true,
-      updatedAt: true,
-      lastLoginAt: true,
-      loginAttempts: true,
-      lockedUntil: true
-    },
+      select: selectFields,
       orderBy,
       skip,
       take: limitNum
@@ -195,10 +219,38 @@ router.get('/', requireAdmin, asyncHandler(async (req: Request, res: Response) =
   ]);
 
   // 处理用户数据
-  const processedUsers = users.map(user => ({
-    ...user,
-    isLocked: user.lockedUntil ? user.lockedUntil > new Date() : false
-  }));
+  const processedUsers = users.map(user => {
+    const processedUser: {
+      id: string;
+      name: string;
+      role: string;
+      isActive: boolean;
+      createdAt: Date;
+      updatedAt: Date;
+      lastLoginAt: Date | null;
+      loginAttempts: number;
+      lockedUntil: Date | null;
+      isLocked: boolean;
+      hasPassword?: boolean;
+      passwordHint?: string;
+      passwordHash?: string;
+    } = {
+      ...user,
+      isLocked: user.lockedUntil ? user.lockedUntil > new Date() : false
+    };
+    
+    // 为超级管理员提供密码提示（显示前几位字符）
+    if (shouldIncludePasswords && user.passwordHash) {
+      // 由于密码是加密的，我们提供一个占位符让前端知道有密码
+      processedUser.hasPassword = true;
+      processedUser.passwordHint = '••••••••'; // 8个点表示有密码
+    }
+    
+    // 移除密码哈希，不返回给前端
+    delete processedUser.passwordHash;
+    
+    return processedUser;
+  });
 
   res.json({
     success: true,
@@ -326,6 +378,14 @@ router.post('/', requireAdmin, asyncHandler(async (req: Request, res: Response) 
     }
   });
 
+  // 发送用户创建通知
+  await sendUserCreatedNotification(newUser.id, newUser.name, newUser.name, req.user?.id || 'system');
+
+  // 发送用户统计更新通知
+  const totalUsers = await prisma.user.count();
+  const onlineUsers = Array.from(sseConnections.keys()).length;
+  await sendUserStatsUpdateNotification(totalUsers, onlineUsers);
+
   res.status(201).json({
     success: true,
     message: '用户创建成功',
@@ -348,7 +408,7 @@ router.put('/:id', requireAdmin, asyncHandler(async (req: Request, res: Response
   // 检查用户是否存在
   const existingUser = await prisma.user.findUnique({
     where: { id },
-    select: { id: true, role: true, email: true }
+    select: { id: true, role: true }
   });
 
   if (!existingUser) {
@@ -375,6 +435,7 @@ router.put('/:id', requireAdmin, asyncHandler(async (req: Request, res: Response
   const updateData: {
     updatedAt: Date;
     name?: string;
+    username?: string;
     role?: Role;
     isActive?: boolean;
     passwordHash?: string;
@@ -388,7 +449,23 @@ router.put('/:id', requireAdmin, asyncHandler(async (req: Request, res: Response
     if (!name || name.trim().length === 0 || name.trim().length > 50) {
       throw new ValidationError('用户名长度必须在1-50个字符之间');
     }
-    updateData.name = name.trim();
+    const trimmedName = name.trim();
+    
+    // 检查用户名是否已被其他用户使用
+    const existingUserWithSameName = await prisma.user.findFirst({
+      where: {
+        username: trimmedName,
+        id: { not: id } // 排除当前用户
+      }
+    });
+    
+    if (existingUserWithSameName) {
+      throw new ConflictError('该用户名已被使用');
+    }
+    
+    updateData.name = trimmedName;
+    // 同时更新username字段，确保用户名和姓名保持一致
+    updateData.username = trimmedName;
   }
 
   if (role !== undefined) {
@@ -417,12 +494,29 @@ router.put('/:id', requireAdmin, asyncHandler(async (req: Request, res: Response
     data: updateData,
     select: {
       id: true,
+      username: true,
       name: true,
       role: true,
       isActive: true,
       updatedAt: true
     }
   });
+
+  // 如果修改了密码且是用户自己修改密码，则使该用户的所有会话失效
+  // 但如果是管理员修改其他用户的密码，则不影响管理员自己的会话
+  if (password && existingUser.id === req.user?.id) {
+    // 只有用户修改自己的密码时才使会话失效
+    await prisma.userSession.updateMany({
+      where: {
+        userId: existingUser.id,
+        isActive: true
+      },
+      data: {
+        isActive: false,
+        lastUsedAt: new Date()
+      }
+    });
+  }
 
   res.json({
     success: true,
@@ -461,6 +555,14 @@ router.delete('/:id', requireSuperAdmin, asyncHandler(async (req: Request, res: 
   await prisma.user.delete({
     where: { id }
   });
+
+  // 发送用户删除通知
+  await sendUserDeletedNotification(existingUser.id, existingUser.name, existingUser.name, req.user?.id || 'system');
+
+  // 发送用户统计更新通知
+  const totalUsers = await prisma.user.count();
+  const onlineUsers = Array.from(sseConnections.keys()).length;
+  await sendUserStatsUpdateNotification(totalUsers, onlineUsers);
 
   res.json({
     success: true,
@@ -508,6 +610,40 @@ router.post('/:id/unlock', requireAdmin, asyncHandler(async (req: Request, res: 
 }));
 
 /**
+ * 获取用户原始密码（仅超级管理员权限）
+ * GET /api/users/:id/password
+ */
+router.get('/:id/password', requireSuperAdmin, asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  if (!id) {
+    throw new ValidationError('用户ID不能为空');
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      name: true,
+      plainPassword: true
+    }
+  });
+
+  if (!user) {
+    throw new NotFoundError('用户不存在');
+  }
+
+  res.json({
+    success: true,
+    data: {
+      userId: user.id,
+      username: user.name,
+      password: user.plainPassword || '密码未设置明文存储'
+    }
+  });
+}));
+
+/**
  * 获取用户统计信息（管理员权限）
  * GET /api/users/stats
  */
@@ -543,6 +679,141 @@ router.get('/stats/overview', requireAdmin, asyncHandler(async (req: Request, re
       inactiveUsers: totalUsers - activeUsers,
       lockedUsers,
       roleDistribution
+    }
+  });
+}));
+
+/**
+ * 用户上线接口
+ * POST /api/users/online
+ */
+router.post('/online', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
+  // 绿色控制台提示
+  console.log('\x1b[32m🟢 收到用户上线请求\x1b[0m');
+  
+  if (!req.user) {
+    throw new ValidationError('用户未认证');
+  }
+
+  const { onlineTime } = req.body;
+  const userId = req.user.id;
+
+  // 获取用户信息
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      name: true,
+      username: true
+    }
+  });
+
+  if (!user) {
+    throw new NotFoundError('用户不存在');
+  }
+
+  // 更新用户最后登录时间
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      lastLoginAt: onlineTime ? new Date(onlineTime) : new Date(),
+      updatedAt: new Date()
+    }
+  });
+
+  // 发送上线通知
+  await sendUserOnlineNotification(userId, user.username || user.name, user.name);
+  
+  // 广播在线用户数更新
+  const { broadcastOnlineUsersUpdate } = await import('./notifications.js');
+  await broadcastOnlineUsersUpdate();
+
+  // 记录操作日志
+  await prisma.operationLog.create({
+    data: {
+      operationType: '用户上线',
+      resourceType: 'USER',
+      operationDetails: { 
+        message: `用户 ${user.name} 上线`,
+        onlineTime: onlineTime || new Date().toISOString()
+      },
+      status: 'SUCCESS',
+      userId,
+      ipAddress: req.ip || 'unknown',
+      userAgent: req.get('User-Agent') || 'unknown'
+    }
+  });
+
+  res.json({
+    success: true,
+    message: '用户上线记录成功',
+    data: {
+      userId,
+      username: user.name,
+      onlineTime: onlineTime || new Date().toISOString()
+    }
+  });
+}));
+
+/**
+ * 用户下线接口
+ * POST /api/users/offline
+ */
+router.post('/offline', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
+  // 绿色控制台提示
+  console.log('\x1b[32m🟢 收到用户下线请求\x1b[0m');
+  
+  if (!req.user) {
+    throw new ValidationError('用户未认证');
+  }
+
+  const { offlineTime } = req.body;
+  const userId = req.user.id;
+
+  // 获取用户信息
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      name: true,
+      username: true
+    }
+  });
+
+  if (!user) {
+    throw new NotFoundError('用户不存在');
+  }
+
+  // 发送下线通知
+  await sendUserOfflineNotification(userId, user.username || user.name, user.name);
+  
+  // 广播在线用户数更新
+  const { broadcastOnlineUsersUpdate } = await import('./notifications.js');
+  await broadcastOnlineUsersUpdate();
+
+  // 记录操作日志
+  await prisma.operationLog.create({
+    data: {
+      operationType: '用户下线',
+      resourceType: 'USER',
+      operationDetails: { 
+        message: `用户 ${user.name} 下线`,
+        offlineTime: offlineTime || new Date().toISOString()
+      },
+      status: 'SUCCESS',
+      userId,
+      ipAddress: req.ip || 'unknown',
+      userAgent: req.get('User-Agent') || 'unknown'
+    }
+  });
+
+  res.json({
+    success: true,
+    message: '用户下线记录成功',
+    data: {
+      userId,
+      username: user.name,
+      offlineTime: offlineTime || new Date().toISOString()
     }
   });
 }));

@@ -58,8 +58,8 @@ const UserModal: React.FC<UserModalProps> = ({
 
     if (mode === 'create' && !formData.password.trim()) {
       newErrors.password = '密码不能为空';
-    } else if (formData.password && formData.password.length < 6) {
-      newErrors.password = '密码至少6个字符';
+    } else if (formData.password && formData.password.length < 8) {
+      newErrors.password = '密码长度至少8个字符';
     }
 
     setErrors(newErrors);

@@ -120,6 +120,8 @@ const Login: React.FC = () => {
       return;
     }
     
+    // 清除之前的错误
+    clearError();
     setIsSubmitting(true);
     
     try {
@@ -141,8 +143,10 @@ const Login: React.FC = () => {
           navigate('/dashboard', { replace: true });
         }, 1000);
       }
+      // 如果success为false，错误信息已经在authStore中设置了
     } catch (err) {
       console.error('Login error:', err);
+      // 这里可以设置额外的错误处理，但通常authStore已经处理了
     } finally {
       setIsSubmitting(false);
     }

@@ -1,7 +1,7 @@
 import React from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { authApi } from '../utils/api';
+import { authApi, userApi } from '../utils/api';
 import { TokenManager } from '../utils/api';
 import type { User, LoginRequest, ApiResponse, LoginResponse } from '../utils/api';
 
@@ -50,6 +50,13 @@ export const useAuthStore = create<AuthState>()(
               error: null
             });
             
+            // 调用用户上线接口
+            try {
+              await userApi.userOnline();
+            } catch (error) {
+              console.warn('用户上线通知发送失败:', error);
+            }
+            
             return true;
           } else {
             set({
@@ -72,6 +79,13 @@ export const useAuthStore = create<AuthState>()(
         set({ isLoading: true });
         
         try {
+          // 先调用用户下线接口
+          try {
+            await userApi.userOffline();
+          } catch (error) {
+            console.warn('用户下线通知发送失败:', error);
+          }
+          
           // 调用登出API
           await authApi.logout();
         } catch (error) {
@@ -93,7 +107,7 @@ export const useAuthStore = create<AuthState>()(
       getCurrentUser: async () => {
         const token = TokenManager.getAccessToken();
         if (!token) {
-          set({ isAuthenticated: false, user: null });
+          set({ isAuthenticated: false, user: null, isLoading: false });
           return;
         }
 
@@ -180,10 +194,20 @@ export const useAuthStore = create<AuthState>()(
       // 在hydration时检查token是否仍然有效
       onRehydrateStorage: () => (state) => {
         if (state?.isAuthenticated) {
-          // 异步验证token有效性
-          setTimeout(() => {
-            state.getCurrentUser();
-          }, 100);
+          // 检查是否有有效的token
+          const token = TokenManager.getAccessToken();
+          if (token) {
+            // 异步验证token有效性
+            setTimeout(() => {
+              state.getCurrentUser();
+            }, 100);
+          } else {
+            // 没有token时清除认证状态
+            state?.logout();
+          }
+        } else {
+          // 确保未认证状态下isLoading为false
+          state?.setLoading(false);
         }
       }
     }
@@ -229,7 +253,7 @@ export const useAuthGuard = () => {
         getCurrentUser();
       }
     }
-  }, [isAuthenticated, isLoading, getCurrentUser]);
+  }, [isAuthenticated, isLoading]); // 移除getCurrentUser依赖，避免无限循环
   
   return { isAuthenticated, isLoading };
 };

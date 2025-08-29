@@ -129,7 +129,14 @@ class ApiClient {
           try {
             const refreshToken = TokenManager.getRefreshToken();
             if (!refreshToken) {
-              throw new Error('No refresh token available');
+              // 没有refresh token，直接清除所有token
+              TokenManager.clearTokens();
+              this.failedQueue.forEach(({ reject }) => {
+                reject(new Error('Authentication required'));
+              });
+              this.failedQueue = [];
+              
+              return Promise.reject(new Error('Authentication required'));
             }
 
             const response = await this.instance.post('/auth/refresh', {
@@ -137,7 +144,7 @@ class ApiClient {
             });
 
             const { accessToken, refreshToken: newRefreshToken } = response.data.data;
-            TokenManager.setTokens(accessToken, newRefreshToken);
+            TokenManager.setTokens(accessToken, newRefreshToken || refreshToken);
 
             // 处理队列中的请求
             this.failedQueue.forEach(({ resolve }) => {
@@ -147,15 +154,13 @@ class ApiClient {
 
             return this.instance(originalRequest);
           } catch (refreshError) {
-            // 刷新失败，清除token并跳转到登录页
+            // 刷新失败，清除token
             TokenManager.clearTokens();
             this.failedQueue.forEach(({ reject }) => {
               reject(refreshError);
             });
             this.failedQueue = [];
             
-            // 触发登录页面跳转
-            window.location.href = '/login';
             return Promise.reject(refreshError);
           } finally {
             this.isRefreshing = false;
@@ -284,9 +289,21 @@ export const userApi = {
   unlockUser: (id: string) => 
     apiClient.post(`/users/${id}/unlock`),
   
+  // 获取用户密码（仅超级管理员）
+  getUserPassword: (id: string) => 
+    apiClient.get<{ password: string }>(`/users/${id}/password`),
+  
   // 获取用户统计
   getUserStats: () => 
     apiClient.get('/users/stats'),
+  
+  // 用户上线
+  userOnline: (data?: { onlineTime?: string }) => 
+    apiClient.post('/users/online', data),
+  
+  // 用户下线
+  userOffline: (data?: { offlineTime?: string }) => 
+    apiClient.post('/users/offline', data),
 };
 
 // 文件管理API

@@ -24,6 +24,7 @@ import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import fileRoutes from './routes/files.js';
 import systemRoutes from './routes/system.js';
+import notificationRoutes from './routes/notifications.js';
 
 // 中间件导入
 import { authMiddleware } from './middleware/auth.js';
@@ -82,9 +83,19 @@ const limiter = rateLimit({
 // 应用速率限制
 app.use(limiter);
 
-// 添加请求日志中间件
-app.use('/api', (req, res, next) => {
-  console.log(`请求: ${req.method} ${req.path}`);
+// 添加请求日志中间件（应用日志过滤）
+app.use('/api', async (req, res, next) => {
+  const message = `请求: ${req.method} ${req.path}`;
+  try {
+    // 异步导入日志过滤函数
+    const { shouldBlockLog } = await import('./config/logConfig.js');
+    if (!shouldBlockLog(message)) {
+      console.log(message);
+    }
+  } catch (error) {
+    // 如果导入失败，仍然输出日志
+    console.log(message);
+  }
   next();
 });
 
@@ -124,6 +135,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', authMiddleware, userRoutes);
 app.use('/api/files', authMiddleware, fileRoutes);
 app.use('/api/system', authMiddleware, systemRoutes);
+// notifications路由有自己的认证中间件，不需要全局authMiddleware
+app.use('/api/notifications', notificationRoutes);
 
 /**
  * 健康检查

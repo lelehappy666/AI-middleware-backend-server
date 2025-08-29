@@ -12,6 +12,7 @@ export interface UpdateUserData {
   name?: string;
   role?: 'SUPER_ADMIN' | 'ADMIN' | 'USER';
   isActive?: boolean;
+  password?: string;
 }
 
 export { type User }

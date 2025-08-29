@@ -1,12 +1,15 @@
-import React, { useState } from 'react';
-import { motion } from 'framer-motion';
-import { Users as UsersIcon, Plus, Search, Filter, Edit, Trash2, Shield, User, CheckCircle, XCircle } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Users as UsersIcon, Plus, Search, Filter, Edit, Trash2, Shield, User, CheckCircle, XCircle, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { useUsers, User as UserType, CreateUserData, UpdateUserData } from '../hooks/useUsers';
 import { usePermissions } from "../store/authStore";
+import { userApi } from '../utils/api';
 import UserModal from '../components/UserModal';
 // import { toast } from 'sonner'; // 暂时注释掉未使用的导入
+import { useNotifications } from '../hooks/useNotifications';
 
 const Users: React.FC = () => {
   const {
@@ -18,7 +21,8 @@ const Users: React.FC = () => {
     setRoleFilter,
     createUser,
     updateUser,
-    deleteUser
+    deleteUser,
+    fetchUsers
   } = useUsers();
 
   const { isSuperAdmin } = usePermissions();
@@ -27,6 +31,104 @@ const Users: React.FC = () => {
   const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
   const [selectedUser, setSelectedUser] = useState<UserType | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
+  const [userPasswords, setUserPasswords] = useState<Record<string, string>>({});
+  const [loadingPasswords, setLoadingPasswords] = useState<Record<string, boolean>>({});
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshTime, setLastRefreshTime] = useState<number>(0);
+  const filterButtonRef = React.useRef<HTMLButtonElement>(null);
+  
+  // SSE通知监听
+  const { notifications } = useNotifications();
+
+  // 自动刷新功能 - 组件挂载时自动获取最新数据
+  useEffect(() => {
+    // 组件挂载时自动刷新一次
+    handleRefresh();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  
+  // 监听SSE通知，实时更新用户列表
+  useEffect(() => {
+    const latestNotification = notifications[0];
+    if (!latestNotification) return;
+    
+    // 监听用户创建和删除通知
+    if (latestNotification.type === 'user_created' || latestNotification.type === 'user_deleted') {
+      // 刷新用户列表以保持同步
+      fetchUsers();
+    }
+  }, [notifications, fetchUsers]);
+
+  // 手动刷新功能，带防连点机制
+  const handleRefresh = useCallback(async () => {
+    const now = Date.now();
+    // 防连点机制：2秒内不允许重复刷新
+    if (now - lastRefreshTime < 2000) {
+      return;
+    }
+    
+    setRefreshing(true);
+    setLastRefreshTime(now);
+    
+    try {
+      await fetchUsers();
+      // 清除所有密码缓存，确保显示最新数据
+      setUserPasswords({});
+      setVisiblePasswords({});
+    } catch (error) {
+      console.error('刷新用户列表失败:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [fetchUsers, lastRefreshTime]);
+
+  // 获取用户密码
+  const fetchUserPassword = async (userId: string) => {
+    if (!isSuperAdmin) return;
+    
+    // 设置加载状态
+    setLoadingPasswords(prev => ({ ...prev, [userId]: true }));
+    
+    try {
+      const response = await userApi.getUserPassword(userId);
+      if (response.success && response.data) {
+        setUserPasswords(prev => ({
+          ...prev,
+          [userId]: response.data.password
+        }));
+      } else {
+        console.error('获取密码失败:', response.error);
+        // 显示错误信息给用户
+        setUserPasswords(prev => ({
+          ...prev,
+          [userId]: '获取失败'
+        }));
+      }
+    } catch (error) {
+      console.error('获取密码失败:', error);
+      // 显示错误信息给用户
+      setUserPasswords(prev => ({
+        ...prev,
+        [userId]: '获取失败'
+      }));
+    } finally {
+      // 清除加载状态
+      setLoadingPasswords(prev => ({ ...prev, [userId]: false }));
+    }
+  };
+
+  // 切换密码显示状态
+  const togglePasswordVisibility = async (userId: string) => {
+    if (!visiblePasswords[userId] && !userPasswords[userId]) {
+      await fetchUserPassword(userId);
+    }
+    
+    setVisiblePasswords(prev => ({
+      ...prev,
+      [userId]: !prev[userId]
+    }));
+  };
 
   const handleCreateUser = () => {
     if (!isSuperAdmin) {
@@ -62,7 +164,20 @@ const Users: React.FC = () => {
     if (modalMode === 'create') {
       return await createUser(data as CreateUserData);
     } else {
-      return await updateUser(selectedUser!.id, data as UpdateUserData);
+      const success = await updateUser(selectedUser!.id, data as UpdateUserData);
+      if (success) {
+        // 清除更新用户的密码缓存，确保显示最新密码
+        setUserPasswords(prev => {
+          const newPasswords = { ...prev };
+          delete newPasswords[selectedUser!.id];
+          return newPasswords;
+        });
+        setVisiblePasswords(prev => ({
+          ...prev,
+          [selectedUser!.id]: false
+        }));
+      }
+      return success;
     }
   };
 
@@ -114,16 +229,28 @@ const Users: React.FC = () => {
             管理系统用户，包括创建、编辑和权限设置。
           </p>
         </div>
-        {isSuperAdmin && (
+        <div className="flex items-center gap-3">
+          {/* 刷新按钮 */}
           <Button 
-            variant="primary" 
+            variant="outline" 
             className="flex items-center gap-2"
-            onClick={handleCreateUser}
+            onClick={handleRefresh}
+            disabled={refreshing}
           >
-            <Plus className="w-4 h-4" />
-            添加用户
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+            {refreshing ? '刷新中...' : '刷新'}
           </Button>
-        )}
+          {isSuperAdmin && (
+            <Button 
+              variant="primary" 
+              className="flex items-center gap-2"
+              onClick={handleCreateUser}
+            >
+              <Plus className="w-4 h-4" />
+              添加用户
+            </Button>
+          )}
+        </div>
       </motion.div>
 
       {/* 搜索和筛选 */}
@@ -143,6 +270,7 @@ const Users: React.FC = () => {
               </div>
               <div className="relative">
                 <Button 
+                  ref={filterButtonRef}
                   variant="outline" 
                   className="flex items-center gap-2"
                   onClick={() => setFilterOpen(!filterOpen)}
@@ -150,44 +278,83 @@ const Users: React.FC = () => {
                   <Filter className="w-4 h-4" />
                   筛选
                 </Button>
-                {filterOpen && (
-                  <div className="absolute right-0 top-full mt-2 bg-white border border-gray-200 rounded-lg shadow-lg p-3 z-10 min-w-[120px]">
-                    <div className="space-y-2">
+                {createPortal(
+                   <AnimatePresence>
+                     {filterOpen && (
+                       <>
+                         {/* 全屏遮罩层 */}
+                         <motion.div 
+                           className="fixed inset-0 bg-black/20 z-[999998]" 
+                           onClick={() => setFilterOpen(false)}
+                           initial={{ opacity: 0 }}
+                           animate={{ opacity: 1 }}
+                           exit={{ opacity: 0 }}
+                           transition={{ duration: 0.2 }}
+                         />
+                         
+                         {/* 筛选菜单 */}
+                         <motion.div
+                           className="fixed bg-white rounded-lg shadow-lg border border-gray-200 py-2 z-[999999]"
+                           style={{
+                             top: filterButtonRef.current ? filterButtonRef.current.getBoundingClientRect().bottom + 8 : 0,
+                             right: filterButtonRef.current ? window.innerWidth - filterButtonRef.current.getBoundingClientRect().right : 0,
+                             width: '160px'
+                           }}
+                           initial={{ opacity: 0, y: -10 }}
+                           animate={{ opacity: 1, y: 0 }}
+                           exit={{ opacity: 0, y: -10 }}
+                           transition={{ duration: 0.2 }}
+                         >
                       <button
-                        onClick={() => { setRoleFilter('ALL'); setFilterOpen(false); }}
-                        className={`block w-full text-left px-3 py-2 rounded-md text-sm ${
-                          roleFilter === 'ALL' ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'
+                        onClick={() => {
+                          setRoleFilter('ALL');
+                          setFilterOpen(false);
+                        }}
+                        className={`w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors ${
+                          roleFilter === 'ALL' ? 'text-blue-600 bg-blue-50' : 'text-gray-700'
                         }`}
                       >
                         全部用户
                       </button>
                       <button
-                        onClick={() => { setRoleFilter('ADMIN'); setFilterOpen(false); }}
-                        className={`block w-full text-left px-3 py-2 rounded-md text-sm ${
-                          roleFilter === 'ADMIN' ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'
+                        onClick={() => {
+                          setRoleFilter('ADMIN');
+                          setFilterOpen(false);
+                        }}
+                        className={`w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors ${
+                          roleFilter === 'ADMIN' ? 'text-blue-600 bg-blue-50' : 'text-gray-700'
                         }`}
                       >
                         管理员
                       </button>
                       <button
-                        onClick={() => { setRoleFilter('SUPER_ADMIN'); setFilterOpen(false); }}
-                        className={`block w-full text-left px-3 py-2 rounded-md text-sm ${
-                          roleFilter === 'SUPER_ADMIN' ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'
+                        onClick={() => {
+                          setRoleFilter('SUPER_ADMIN');
+                          setFilterOpen(false);
+                        }}
+                        className={`w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors ${
+                          roleFilter === 'SUPER_ADMIN' ? 'text-blue-600 bg-blue-50' : 'text-gray-700'
                         }`}
                       >
                         超级管理员
                       </button>
                       <button
-                        onClick={() => { setRoleFilter('USER'); setFilterOpen(false); }}
-                        className={`block w-full text-left px-3 py-2 rounded-md text-sm ${
-                          roleFilter === 'USER' ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'
+                        onClick={() => {
+                          setRoleFilter('USER');
+                          setFilterOpen(false);
+                        }}
+                        className={`w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors ${
+                          roleFilter === 'USER' ? 'text-blue-600 bg-blue-50' : 'text-gray-700'
                         }`}
                       >
                         普通用户
                       </button>
-                    </div>
-                  </div>
-                )}
+                    </motion.div>
+                       </>
+                     )}
+                   </AnimatePresence>,
+                   document.body
+                 )}
               </div>
             </div>
           </CardContent>
@@ -227,6 +394,9 @@ const Users: React.FC = () => {
                       <th className="text-left py-3 px-4 font-medium text-gray-700">用户</th>
                       <th className="text-left py-3 px-4 font-medium text-gray-700">角色</th>
                       <th className="text-left py-3 px-4 font-medium text-gray-700">状态</th>
+                      {isSuperAdmin && (
+                        <th className="text-left py-3 px-4 font-medium text-gray-700">密码</th>
+                      )}
                       <th className="text-left py-3 px-4 font-medium text-gray-700">创建时间</th>
                       <th className="text-left py-3 px-4 font-medium text-gray-700">最后登录</th>
                       <th className="text-right py-3 px-4 font-medium text-gray-700">操作</th>
@@ -276,6 +446,33 @@ const Users: React.FC = () => {
                             {user.isActive ? '启用' : '禁用'}
                           </span>
                         </td>
+                        {isSuperAdmin && (
+                          <td className="py-4 px-4">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm text-gray-600 font-mono">
+                                {visiblePasswords[user.id] 
+                                  ? (loadingPasswords[user.id] 
+                                      ? '加载中...' 
+                                      : (userPasswords[user.id] || '••••••••')
+                                    )
+                                  : '••••••••'
+                                }
+                              </span>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => togglePasswordVisibility(user.id)}
+                                className="p-1 h-6 w-6"
+                              >
+                                {visiblePasswords[user.id] ? (
+                                  <EyeOff className="w-3 h-3" />
+                                ) : (
+                                  <Eye className="w-3 h-3" />
+                                )}
+                              </Button>
+                            </div>
+                          </td>
+                        )}
                         <td className="py-4 px-4 text-sm text-gray-600">
                           {formatDate(user.createdAt)}
                         </td>

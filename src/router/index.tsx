@@ -9,6 +9,8 @@ import Users from '../pages/Users';
 import Files from '../pages/Files';
 import Settings from '../pages/Settings';
 import Profile from '../pages/Profile';
+import TestSSE from '../pages/TestSSE';
+import TokenDebug from '../pages/TokenDebug';
 
 // 路由守卫组件
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -89,6 +91,14 @@ export const router = createBrowserRouter([
       {
         path: 'profile',
         element: <Profile />
+      },
+      {
+        path: 'test-sse',
+        element: <TestSSE />
+      },
+      {
+        path: 'token-debug',
+        element: <TokenDebug />
       }
     ]
   },

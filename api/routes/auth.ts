@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '../lib/prisma.js';
 import { asyncHandler, ValidationError, AuthenticationError } from '../middleware/errorHandler.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { sendUserOnlineNotification, sendUserOfflineNotification, sendUserLoginActivityNotification, sendUserLogoutActivityNotification } from './notifications';
 
 const router = Router();
 
@@ -22,6 +23,9 @@ const JWT_REFRESH_EXPIRES_IN = (process.env.JWT_REFRESH_EXPIRES_IN || '7d') as S
  * POST /api/auth/login
  */
 router.post('/login', asyncHandler(async (req: Request, res: Response) => {
+  // 绿色控制台提示
+  console.log('\x1b[32m🟢 收到用户登录请求\x1b[0m');
+  
   const { username, password, rememberMe = false } = req.body;
 
   // 验证输入
@@ -164,6 +168,12 @@ router.post('/login', asyncHandler(async (req: Request, res: Response) => {
     }
   });
 
+  // 发送用户上线通知
+  await sendUserOnlineNotification(user.id, user.username, user.name);
+  
+  // 发送用户登录活动通知
+  await sendUserLoginActivityNotification(user.id, user.username, user.name, req.ip);
+
   // 返回用户信息和token
   const userInfo = {
       id: user.id,
@@ -287,6 +297,9 @@ router.post('/refresh', asyncHandler(async (req: Request, res: Response) => {
  * POST /api/auth/logout
  */
 router.post('/logout', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
+  // 绿色控制台提示
+  console.log('\x1b[32m🟢 收到用户登出请求\x1b[0m');
+  
   const { sessionId } = req.body;
   const userId = req.user!.id;
 
@@ -316,6 +329,12 @@ router.post('/logout', authMiddleware, asyncHandler(async (req: Request, res: Re
     });
   }
 
+  // 获取用户信息用于通知
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { username: true, name: true }
+  });
+
   // 记录登出日志
   await prisma.operationLog.create({
     data: {
@@ -328,6 +347,14 @@ router.post('/logout', authMiddleware, asyncHandler(async (req: Request, res: Re
       userAgent: req.get('User-Agent') || 'unknown'
     }
   });
+
+  // 发送用户下线通知
+  if (user) {
+    await sendUserOfflineNotification(userId, user.username, user.name);
+    
+    // 发送用户登出活动通知
+    await sendUserLogoutActivityNotification(userId, user.username, user.name, req.ip);
+  }
 
   res.json({
     success: true,

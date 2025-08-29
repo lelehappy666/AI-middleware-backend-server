@@ -66,7 +66,6 @@ const Files: React.FC = () => {
     loading,
     totalFiles,
     deleteFile,
-    fetchFiles,
     fetchImageFiles,
     fetchVideoFiles,
     uploadFile
@@ -89,7 +88,7 @@ const Files: React.FC = () => {
       console.log('📋 [DEBUG] 调用 fetchVideoFiles');
       fetchVideoFiles();
     }
-  }, [activeTab]); // 移除函数依赖，避免无限循环
+  }, [activeTab, fetchImageFiles, fetchVideoFiles]);
 
   // 处理标签页切换
   const handleTabChange = (tab: TabType) => {

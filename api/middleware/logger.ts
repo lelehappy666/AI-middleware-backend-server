@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { v4 as uuidv4 } from 'uuid';
+import { shouldBlockLog } from '../config/logConfig';
 
 /**
  * 请求日志接口
@@ -42,8 +43,11 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction): 
     startTime
   };
 
-  // 记录请求开始
-  console.log(`[${requestLog.startTime.toISOString()}] ${requestLog.method} ${requestLog.url} - ${requestLog.ip} - ${requestLog.id}`);
+  // 记录请求开始（应用日志过滤）
+  const startMessage = `[${requestLog.startTime.toISOString()}] ${requestLog.method} ${requestLog.url} - ${requestLog.ip} - ${requestLog.id}`;
+  if (!shouldBlockLog(startMessage)) {
+    console.log(startMessage);
+  }
 
   // 监听响应结束事件
   res.on('finish', () => {
@@ -60,17 +64,20 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction): 
     const logLevel = getLogLevel(res.statusCode);
     const logMessage = formatLogMessage(requestLog);
 
-    switch (logLevel) {
-      case 'error':
-        console.error(logMessage);
-        break;
-      case 'warn':
-        console.warn(logMessage);
-        break;
-      case 'info':
-      default:
-        console.log(logMessage);
-        break;
+    // 应用日志过滤规则
+    if (!shouldBlockLog(logMessage)) {
+      switch (logLevel) {
+        case 'error':
+          console.error(logMessage);
+          break;
+        case 'warn':
+          console.warn(logMessage);
+          break;
+        case 'info':
+        default:
+          console.log(logMessage);
+          break;
+      }
     }
   });
 

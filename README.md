@@ -1,4 +1,33 @@
-# React + TypeScript + Vite
+# AI中台后端服务器项目
+
+这是一个基于React + TypeScript + Vite的AI中台后端服务器项目，提供用户管理、文件管理等功能。
+
+## 项目信息
+
+- **前端页面地址**: http://localhost:5173
+- **后端API地址**: http://localhost:3000
+- **数据库**: SQLite (使用Prisma ORM)
+
+## 快速开始
+
+1. 安装依赖:
+```bash
+npm install
+```
+
+2. 启动开发服务器:
+```bash
+npm run dev
+```
+
+3. 访问前端页面: http://localhost:5173
+
+## 技术栈
+
+- 前端: React + TypeScript + Vite + Tailwind CSS
+- 后端: Node.js + Express + TypeScript
+- 数据库: SQLite + Prisma ORM
+- 认证: JWT
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 

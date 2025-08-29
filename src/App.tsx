@@ -8,10 +8,14 @@ import { Loading } from './components/ui/Loading';
 function App() {
   const { getCurrentUser, isLoading } = useAuthStore();
 
-  // 应用启动时检查用户认证状态
+  // 应用启动时检查用户认证状态（仅在没有持久化状态时）
   useEffect(() => {
-    getCurrentUser();
-  }, [getCurrentUser]);
+    // 如果没有持久化的认证状态，则检查当前用户
+    const hasPersistedAuth = localStorage.getItem('auth-storage');
+    if (!hasPersistedAuth) {
+      getCurrentUser();
+    }
+  }, []); // 移除getCurrentUser依赖，避免无限循环
 
   // 显示加载状态
   if (isLoading) {

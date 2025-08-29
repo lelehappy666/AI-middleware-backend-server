@@ -12,11 +12,8 @@ const server = app.listen(PORT, () => {
   console.log(`Server ready on port ${PORT}`);
 });
 
-// 设置服务器超时配置
-server.timeout = 5 * 60 * 1000; // 5分钟超时
-server.keepAliveTimeout = 65000; // 65秒保持连接
-server.headersTimeout = 66000; // 66秒头部超时
-
+// 设置服务器超时配�?server.timeout = 5 * 60 * 1000; // 5分钟超时
+server.keepAliveTimeout = 65000; // 65秒保持连�?server.headersTimeout = 66000; // 66秒头部超�?
 /**
  * close server
  */

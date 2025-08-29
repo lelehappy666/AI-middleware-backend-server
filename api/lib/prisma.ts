@@ -7,7 +7,8 @@ declare global {
 
 // 创建 Prisma 客户端实例
 const prisma = globalThis.__prisma || new PrismaClient({
-  log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
+  // 只记录错误日志，屏蔽周期性的查询日志
+  log: ['error'],
 });
 
 // 在开发环境中缓存实例，避免热重载时重复创建

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
+import { useNotifications } from '../hooks/useNotifications';
 import { 
   BarChart3, 
   Users, 
@@ -22,6 +23,7 @@ import {
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { useNavigate } from 'react-router-dom';
+import { systemApi } from '../utils/api';
 
 interface SystemMetrics {
   cpu: number;
@@ -39,6 +41,21 @@ interface DashboardStats {
   todayLogins: number;
 }
 
+interface SystemStatusResponse {
+  success: boolean;
+  data: {
+    database: {
+      stats: {
+        users: number;
+        files: number;
+        activeSessions: number;
+      };
+    };
+  };
+}
+
+
+
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -48,11 +65,233 @@ const Dashboard: React.FC = () => {
     disk: 23,
     network: 89
   });
+  const [stats, setStats] = useState<DashboardStats>({
+    totalUsers: 0,
+    totalFiles: 0,
+    activeUsers: 0,
+    systemLoad: 0,
+    todayUploads: 156,
+    todayLogins: 234
+  });
+  const [loading, setLoading] = useState(true);
+  const [recentActivities, setRecentActivities] = useState([
+    { id: 1, user: "张三", action: "上传了文件", file: "项目报告.pdf", time: "2分钟前", type: "upload" },
+    { id: 2, user: "李四", action: "创建了用户", file: "新员工账户", time: "5分钟前", type: "user" },
+    { id: 3, user: "王五", action: "修改了权限", file: "系统配置", time: "10分钟前", type: "permission" },
+    { id: 4, user: "赵六", action: "删除了文件", file: "临时文档.txt", time: "15分钟前", type: "delete" },
+    { id: 5, user: "钱七", action: "登录系统", file: "管理后台", time: "18分钟前", type: "login" }
+  ]);
+  
+  // 使用通知Hook
+  const { notifications } = useNotifications();
 
-  // 模拟实时数据更新
+  // 实时时间更新
   useEffect(() => {
-    const timer = setInterval(() => {
+    const timeTimer = setInterval(() => {
       setCurrentTime(new Date());
+    }, 1000); // 每秒更新时间
+
+    return () => clearInterval(timeTimer);
+  }, []);
+
+  // 获取在线用户数
+  const fetchOnlineUsers = useCallback(async () => {
+    try {
+      const response = await fetch('http://localhost:3001/api/notifications/online-users', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!response.ok) {
+        if (response.status === 401) {
+          console.warn('Token已过期，需要重新登录');
+          return;
+        }
+        throw new Error(`HTTP ${response.status}`);
+      }
+      
+      const data = await response.json();
+      if (data.success) {
+        setStats(prev => ({
+          ...prev,
+          activeUsers: data.data.count || 0
+        }));
+      }
+    } catch (error) {
+      console.error('获取在线用户数失败:', error);
+    }
+  }, []);
+
+  // 获取用户统计数据
+  const fetchUserStats = useCallback(async () => {
+    try {
+      const response = await fetch('http://localhost:3001/api/notifications/user-stats', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!response.ok) {
+        if (response.status === 401) {
+          console.warn('Token已过期，需要重新登录');
+          return;
+        }
+        throw new Error(`HTTP ${response.status}`);
+      }
+      
+      const data = await response.json();
+      if (data.success) {
+        setStats(prev => ({
+          ...prev,
+          totalUsers: data.data.totalUsers || 0
+        }));
+      }
+    } catch (error) {
+      console.error('获取用户统计数据失败:', error);
+    }
+  }, []);
+
+  // 获取系统统计数据
+  const fetchSystemStats = useCallback(async () => {
+    try {
+      const response = await systemApi.getSystemStatus();
+      const data = response.data as SystemStatusResponse;
+      if (data.success && data.data?.database?.stats) {
+        const dbStats = data.data.database.stats;
+        setStats(prev => ({
+          ...prev,
+          totalFiles: dbStats.files || 0,
+          systemLoad: Math.round(systemMetrics.cpu)
+        }));
+      }
+    } catch (error) {
+      console.error('获取系统统计数据失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [systemMetrics.cpu]);
+
+  // 初始化数据获取
+  useEffect(() => {
+    fetchSystemStats();
+    fetchOnlineUsers();
+    fetchUserStats();
+  }, [fetchSystemStats, fetchOnlineUsers, fetchUserStats]);
+
+  // 定期更新统计数据
+  useEffect(() => {
+    const statsTimer = setInterval(() => {
+      fetchSystemStats();
+      fetchOnlineUsers();
+      fetchUserStats();
+    }, 30000); // 每30秒更新一次统计数据
+
+    return () => clearInterval(statsTimer);
+  }, [fetchSystemStats, fetchOnlineUsers, fetchUserStats]);
+
+  // 监听SSE通知更新统计数据
+  useEffect(() => {
+    notifications.forEach(notification => {
+      if (notification.type === 'online' || notification.type === 'offline') {
+        // 用户上线/下线时更新在线用户数
+        fetchOnlineUsers();
+        
+        // 添加到最近活动
+        const activityType = notification.type === 'online' ? 'login' : 'logout';
+        const newActivity = {
+          id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          user: (notification.username as string) || (notification.name as string) || '用户',
+          action: notification.type === 'online' ? '登录系统' : '退出系统',
+          file: '管理后台',
+          time: '刚刚',
+          type: activityType
+        };
+        
+        setRecentActivities(prev => [newActivity, ...prev.slice(0, 4)]);
+      } else if (notification.type === 'user_created') {
+        // 用户创建时更新总用户数
+        fetchUserStats();
+        
+        // 添加到最近活动
+        const newActivity = {
+          id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          user: '管理员',
+          action: '创建了用户',
+          file: (notification.data?.username as string) || '新用户',
+          time: '刚刚',
+          type: 'user'
+        };
+        
+        setRecentActivities(prev => [newActivity, ...prev.slice(0, 4)]);
+      } else if (notification.type === 'user_deleted') {
+        // 用户删除时更新总用户数
+        fetchUserStats();
+        
+        // 添加到最近活动
+        const newActivity = {
+          id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          user: '管理员',
+          action: '删除了用户',
+          file: (notification.data?.username as string) || '用户',
+          time: '刚刚',
+          type: 'delete'
+        };
+        
+        setRecentActivities(prev => [newActivity, ...prev.slice(0, 4)]);
+      } else if (notification.type === 'user_login_activity') {
+        // 添加登录活动到最近活动
+        const newActivity = {
+          id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          user: (notification.username as string) || (notification.name as string) || '用户',
+          action: '登录系统',
+          file: '管理后台',
+          time: '刚刚',
+          type: 'login'
+        };
+        
+        setRecentActivities(prev => [newActivity, ...prev.slice(0, 4)]);
+      } else if (notification.type === 'user_logout_activity') {
+        // 添加登出活动到最近活动
+        const newActivity = {
+          id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          user: (notification.username as string) || (notification.name as string) || '用户',
+          action: '退出系统',
+          file: '管理后台',
+          time: '刚刚',
+          type: 'logout'
+        };
+        
+        setRecentActivities(prev => [newActivity, ...prev.slice(0, 4)]);
+      } else if (notification.type === 'stats_update' || notification.type === 'user_stats_update') {
+        // 统计数据更新 - 直接从通知数据中获取在线用户数
+        if (notification.data && typeof notification.data === 'object') {
+          const notificationData = notification.data as any;
+          if (typeof notificationData.onlineUsers === 'number') {
+            setStats(prev => ({
+              ...prev,
+              activeUsers: notificationData.onlineUsers
+            }));
+            console.log(`📊 实时更新在线用户数: ${notificationData.onlineUsers}`);
+          }
+          if (typeof notificationData.totalUsers === 'number') {
+            setStats(prev => ({
+              ...prev,
+              totalUsers: notificationData.totalUsers
+            }));
+          }
+        }
+        // 仍然调用API获取其他统计数据
+        fetchUserStats();
+      }
+    });
+  }, [notifications, fetchOnlineUsers, fetchUserStats]);
+
+  // 模拟系统指标数据更新
+  useEffect(() => {
+    const metricsTimer = setInterval(() => {
       // 模拟系统指标变化
       setSystemMetrics(prev => ({
         cpu: Math.max(20, Math.min(90, prev.cpu + (Math.random() - 0.5) * 10)),
@@ -60,20 +299,12 @@ const Dashboard: React.FC = () => {
         disk: Math.max(10, Math.min(80, prev.disk + (Math.random() - 0.5) * 5)),
         network: Math.max(50, Math.min(100, prev.network + (Math.random() - 0.5) * 15))
       }));
-    }, 3000);
+    }, 3000); // 每3秒更新系统指标
 
-    return () => clearInterval(timer);
+    return () => clearInterval(metricsTimer);
   }, []);
 
-  // 模拟数据
-  const stats: DashboardStats = {
-    totalUsers: 1248,
-    totalFiles: 3567,
-    activeUsers: 89,
-    systemLoad: Math.round(systemMetrics.cpu),
-    todayUploads: 156,
-    todayLogins: 234
-  };
+  // 统计数据现在通过API获取，不再使用硬编码数据
 
   const welcomeMessages = [
     "今天是美好的一天，开始您的工作吧！",
@@ -82,13 +313,7 @@ const Dashboard: React.FC = () => {
     "AI中台系统为您提供最佳服务体验。"
   ];
 
-  const recentActivities = [
-    { id: 1, user: "张三", action: "上传了文件", file: "项目报告.pdf", time: "2分钟前", type: "upload" },
-    { id: 2, user: "李四", action: "创建了用户", file: "新员工账户", time: "5分钟前", type: "user" },
-    { id: 3, user: "王五", action: "修改了权限", file: "系统配置", time: "10分钟前", type: "permission" },
-    { id: 4, user: "赵六", action: "删除了文件", file: "临时文档.txt", time: "15分钟前", type: "delete" },
-    { id: 5, user: "钱七", action: "登录系统", file: "管理后台", time: "18分钟前", type: "login" }
-  ];
+
 
   const getActivityIcon = (type: string) => {
     switch (type) {
@@ -97,6 +322,7 @@ const Dashboard: React.FC = () => {
       case 'permission': return <Shield className="w-4 h-4 text-purple-600" />;
       case 'delete': return <AlertTriangle className="w-4 h-4 text-red-600" />;
       case 'login': return <CheckCircle className="w-4 h-4 text-emerald-600" />;
+      case 'logout': return <Activity className="w-4 h-4 text-orange-600" />;
       default: return <Activity className="w-4 h-4 text-gray-600" />;
     }
   };
@@ -181,7 +407,9 @@ const Dashboard: React.FC = () => {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-600">总用户数</p>
-                <p className="text-2xl font-bold text-gray-900">{stats.totalUsers.toLocaleString()}</p>
+                <p className="text-2xl font-bold text-gray-900">
+                  {loading ? '加载中...' : stats.totalUsers.toLocaleString()}
+                </p>
               </div>
               <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
                 <Users className="w-6 h-6 text-blue-600" />
@@ -189,7 +417,7 @@ const Dashboard: React.FC = () => {
             </div>
             <div className="mt-4 flex items-center">
               <TrendingUp className="w-4 h-4 text-green-500 mr-1" />
-              <span className="text-sm text-green-600">+12% 较上月</span>
+              <span className="text-sm text-green-600">实时同步</span>
             </div>
           </CardContent>
         </Card>
@@ -199,7 +427,9 @@ const Dashboard: React.FC = () => {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-600">文件总数</p>
-                <p className="text-2xl font-bold text-gray-900">{stats.totalFiles.toLocaleString()}</p>
+                <p className="text-2xl font-bold text-gray-900">
+                  {loading ? '加载中...' : stats.totalFiles.toLocaleString()}
+                </p>
               </div>
               <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                 <FileText className="w-6 h-6 text-green-600" />
@@ -207,7 +437,7 @@ const Dashboard: React.FC = () => {
             </div>
             <div className="mt-4 flex items-center">
               <TrendingUp className="w-4 h-4 text-green-500 mr-1" />
-              <span className="text-sm text-green-600">+8% 较上月</span>
+              <span className="text-sm text-green-600">实时同步</span>
             </div>
           </CardContent>
         </Card>
@@ -216,8 +446,10 @@ const Dashboard: React.FC = () => {
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-600">活跃用户</p>
-                <p className="text-2xl font-bold text-gray-900">{stats.activeUsers}</p>
+                <p className="text-sm font-medium text-gray-600">当前在线</p>
+                <p className="text-2xl font-bold text-gray-900">
+                  {loading ? '加载中...' : stats.activeUsers.toLocaleString()}
+                </p>
               </div>
               <div className="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
                 <Activity className="w-6 h-6 text-yellow-600" />
@@ -225,7 +457,7 @@ const Dashboard: React.FC = () => {
             </div>
             <div className="mt-4 flex items-center">
               <Clock className="w-4 h-4 text-blue-500 mr-1" />
-              <span className="text-sm text-blue-600">当前在线</span>
+              <span className="text-sm text-blue-600">实时在线用户</span>
             </div>
           </CardContent>
         </Card>
